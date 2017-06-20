@@ -6,6 +6,8 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
+# This document is hosted at http://rpubs.com/mdavid-stc/275676
+# After knitting, just use the (Re)Publish button to put it there.
 knitr::opts_chunk$set(echo = TRUE)
 setwd("/Training/DataScience/R/Capstone")
 set.seed(6844)
@@ -27,7 +29,7 @@ The data comes in three data source files in each of four languages. This projec
 
 This report will demonstrate that the data has been loaded, cleaned, and analyzed. The plan for continuing on toward building the model is presented.
 
-All code for this report can be found here: 
+All code for this report can be found here: https://github.com/mdavid-stc/Capstone/blob/master/Milestone1.Rmd
 
 ## Setup
 
@@ -106,6 +108,7 @@ Due to memory constraints, the data files were loaded one at a time, summary sta
 # Read blog data file
 if (file.exists(tidyblogfn)) {
     load(file=tidyblogfn)
+    lenb <- nrow(tidyb)
 } else {
     con <- file(blogfn, open="r")
     # Encoding as UTF-8 leads to tolower errors.
@@ -194,6 +197,7 @@ rm(cnt3b)
 # Read news data file
 if (file.exists(tidynewsfn)) {
     load(file=tidynewsfn)
+    lenn <- nrow(tidyn)
 } else {
     con <- file(newsfn, open="rb")   # Must read as binary to avoid "incomplete final line" due to SUB
     linn <- readLines(con, newssz, encoding="lat", skipNul=TRUE)
@@ -280,6 +284,7 @@ rm(cnt3n)
 # Read twitter data file
 if (file.exists(tidytwitfn)) {
     load(file=tidytwitfn)
+    lent <- nrow(tidyt)
 } else {
     con <- file(twitfn, open="r")
     lint <- readLines(con, twitsz, encoding="lat", skipNul=TRUE)

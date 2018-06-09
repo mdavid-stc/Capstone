@@ -23,7 +23,7 @@ shinyUI(fluidPage(
         textInput("inText",  "Text input:", value=""),
         p(" "),
         helpText("Note that if you are the first person to use this app in a while, you may have to wait 20 seconds for the first suggestions to show. But it should be quick after that."),
-        p("Documentation:"), a("https://mdavid-stc.github.io/Capstone/index.html")
+        p("Documentation:"), a("https://github.com/mdavid-stc/Capstone")
     ),
 
     # Show a plot of the generated distribution

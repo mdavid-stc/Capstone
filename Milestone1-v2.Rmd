@@ -1,0 +1,465 @@
+---
+title: 'Milestone Report #1'
+author: "Mark David"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# This document is hosted at http://rpubs.com/mdavid-stc/275676
+# After knitting, just use the (Re)Publish button to put it there.
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Training/DataScience/R/Capstone")
+set.seed(6844)
+library(dplyr)
+library(tidytext)
+library(ggplot2)
+
+### Sampling
+# Use rbinom below to create a random subsample of the data
+pct <- 1   # percent to choose (0-1)
+```
+
+This is the first Milestone Report for the Capstone Project of the Data Science Specialization from Johns Hopkins University through Coursera.
+
+The given task is to analyze a corpus of unstructured text and build a word prediction model based on that text. This model will then be instantiated as a web application so that it can be used, but it is understood that the end goal is for the predictor to fit in a cell phone.
+
+The data comes in three data source files in each of four languages. This project deals with the English versions only, but includes all three sources (blogs, news, and twitter).
+
+This report will demonstrate that the data has been loaded, cleaned, and analyzed. The plan for continuing on toward building the model is presented.
+
+All code for this report can be found here: https://github.com/mdavid-stc/Capstone/blob/master/Milestone1-v2.Rmd
+
+## Setup
+
+The setup code simply checks that the source data files are available (and downloads them if they are not already local), loads the profanity list, and establishes some helpful functions.
+
+```{r load, echo=FALSE}
+# Check for the presence of the data, possibly zipped.
+fileUrl <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+zipfn <- "Coursera-SwiftKey.zip"
+stopfile <- "final/en_US/stopwords.txt"
+blogfn <- "final/en_US/en_US.blogs.txt"
+newsfn <- "final/en_US/en_US.news.txt"
+twitfn <- "final/en_US/en_US.twitter.txt"
+phrasefn <- "final/en_US/common_phrases.txt"
+tidyblogfn <- "data/tidy_blogs.rda"
+tidynewsfn <- "data/tidy_news.rda"
+tidytwitfn <- "data/tidy_twitter.rda"
+tidyphrasefn <- "data/tidy_phrase.rda"
+sent_fn <- "data/sentences.txt"
+words_fn <- "data/words.rda"
+wIDs_fn <- "data/wIDs.rda"
+phrases_fn <- "data/phrases.rda"
+pIDs_fn <- "data/pIDs.rda"
+# Sizes are from "wc -l"
+blogsz <-  898288
+blogsent <- 2377724   # was 2370408
+newssz <- 1010242
+newssent <- 2049351   # was 2025757
+twitsz <- 2360148
+twitsent <- 3749768   # was 3771608
+phrasesz <- 1938
+phrasesent <- 1942
+
+numReplacement <- "XXNUMXX"
+
+# Make sure the data is available in the current directory.
+if (!file.exists(blogfn) || !file.exists(newsfn) || !file.exists(twitfn)) {
+    if (!file.exists(zipfn)) {
+        # Download the data file
+        download.file(fileUrl, zipfn, "curl")
+    }
+    # Unzip the data file
+    unzip(zipfn)
+}
+
+### Tranformations
+
+# Fix some punctuation that messes up the tokenization
+cleanText <- function(vec) {
+    for (i in 1:length(vec)) {
+        line <- iconv(vec[i], "UTF-8", "UTF-8")
+        line <-  gsub("[\u201C\u201D\u201E\u201F\u2033\u2036]", '"', line)   # "smart" quotes
+        line <-  gsub("[\u2018\u2019\u201A\u201B\u2032\u2035]", "'", line)   # "smart" quotes
+        line <-  gsub(" [#@]([A-Za-z0-9])", " ", line)   # remove Twitter hashtags, references
+        line <-  gsub("\\b\\d{1,3}(,\\d{3})*(\\.\\d+)?\\b", numReplacement, line)   # make all numbers the same
+        # We don't actually need to be as precise as the previous line, so just replace anything that looks like a number.
+        line <-  gsub("\\b[0-9]+([/.][0-9]+)?\\b", numReplacement, line)   # make all numbers the same
+        # The slash above is for ratings like "6.5/10" or fractions like "2/3"
+        vec[i] <- line
+    }
+    out <- tidy(vec)
+    out$docId <- as.numeric(rownames(out))
+    out
+}
+
+rawToTidyCnts <- function(src_name, base_fn, base_sz, tidy_fn, binary=FALSE) {
+    if (file.exists(tidy_fn)) {
+        load(file=tidy_fn)
+        len <- nrow(tidy_set)
+        if (pct < 1.0)   # sample for speed
+            tidy_set <- tidy_set[rbinom(len*pct, len, .5), ]
+    } else {
+        # Read text lines from plain text file.
+        if (binary) {
+            con <- file(base_fn, open="rb")   # Must read as binary to avoid "incomplete final line" due to SUB
+        } else {
+            con <- file(base_fn, open="r")
+        }
+        # Encoding as UTF-8 leads to tolower errors.
+        lines <- readLines(con, base_sz, encoding="lat", skipNul=TRUE)   # character vector
+        close(con)   ## Close the connection when we are done
+
+        # Check that full file was read, then reduce if desired.
+        len <- length(lines)
+        if (len != base_sz)
+            print(paste("ERROR!", base_fn, "was read improperly!"))
+        if (pct < 1.0)   # sample for speed
+            lines <- lines[rbinom(len*pct, len, .5)]
+
+        # Get the token list for the data.
+        tidy_set <- cleanText(lines)
+        rm(lines)
+        save(tidy_set, file=tidy_fn)   # store for later quick loading
+    }
+    ### Tokenization (includes lowercasing)
+    # Purposely not using stemming, loses too many meanings
+    tokens <- tidy_set %>% unnest_tokens(ngram, x, token="words") %>% na.omit() %>% anti_join(shitlist)
+    rm(tidy_set)
+    counts <- tokens %>% count(ngram, sort=TRUE) %>% ungroup()
+    rm(tokens)
+    counts
+}
+
+# Read stopwords file
+con <- file(stopfile, open="r")
+shitlist <- readLines(con)
+close(con)
+```
+
+## Tokenize the Data
+
+When the data is read in, we check that it did not quit partway through. This kind of error can happen when unexpected (control, non-graphical) characters are encountered.
+
+Some extended chars are converted to their ASCII equivalents (such as "smart quotes"), the text is divided into tokens, lowercased, numbers are all put in one bucket, and most punctuation is removed. Also, tokens that are profanity are removed. Various statistics are counted across 1-, 2-, and 3-grams.
+
+Due to memory constraints, the data files were loaded one at a time, summary statistics were kept, and the data was unloaded in preparation for the next file.
+
+```{r blog, echo=FALSE, message = FALSE}
+# Do the full processing for each file one at a time, due to memory constraints.
+
+### BLOG DATA ###
+
+# Read blog data file
+cntb <- rawToTidyCnts("blog", blogfn, blogsz, tidyblogfn)
+
+### Frequency
+save(cntb, file="data/unigrams_blogs.rda")   # store for later quick loading
+# Size of cntX is total unique words
+uniqwordsb <- nrow(cntb)
+# Sum the values in the n column for total word occurrences
+totalwordsb <- (cntb %>% summarize(total=sum(n)))[[1]]   # better match nrow(tokb)
+# Common words
+comb <- head(cntb, 20)
+# Half of text words
+wcnt <- 0
+halfb <- 1
+ninetyb <- 1
+for (i in 1:nrow(cntb)) {
+    wcnt <- wcnt + as.integer(cntb[i,2])
+    if (wcnt <= totalwordsb/2)
+        halfb <- halfb + 1
+    if (wcnt <= totalwordsb * 0.9)
+        ninetyb <- ninetyb + 1
+}
+# Word frequency distribution
+ggb <- ggplot(cntb, aes(n/totalwordsb*100)) +
+    geom_histogram(binwidth=0.001, fill="blue", show.legend = FALSE) +
+    xlim(NA, 0.1) +
+    scale_y_log10() +
+    labs(title="Blogs", x="Occurrence %")
+rm(cntb)
+
+### 2-grams
+load(file=tidyblogfn)   # restore
+# Split the tokens into pairs
+cnt2b <- tidyb %>% unnest_tokens(bigram, x, token="ngrams", n=2) %>% count(bigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyb)
+save(cnt2b, file="data/bigrams_blogs.rda")   # store for later quick loading
+uniqwords2b <- nrow(cnt2b)
+# Sum the values in the n column for total bigram occurrences
+totalwords2b <- (cnt2b %>% summarize(total=sum(n)))[[1]]
+# Common bigrams
+com2b <- head(cnt2b, 20)
+rm(cnt2b)
+
+### 3-grams
+load(file=tidyblogfn)   # restore
+# Split the tokens into triples
+cnt3b <- tidyb %>% unnest_tokens(trigram, x, token="ngrams", n=3) %>% count(trigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyb)
+save(cnt3b, file="data/trigrams_blogs.rda")   # store for later quick loading
+uniqwords3b <- nrow(cnt3b)
+# Sum the values in the n column for total trigram occurrences
+totalwords3b <- (cnt3b %>% summarize(total=sum(n)))[[1]]
+# Common trigrams
+com3b <- head(cnt3b, 20)
+rm(cnt3b)
+```
+
+
+```{r news, echo=FALSE, message = FALSE}
+### NEWS DATA ###
+
+cntn <- rawToTidyCnts("news", newsfn, newssz, tidynewsfn, TRUE)
+
+### Frequency
+save(cntn, file="data/unigrams_news.rda")
+# Size of cntX is total unique words
+uniqwordsn <- nrow(cntn)
+# Sum the values in the n column for total word occurrences
+totalwordsn <- (cntn %>% summarize(total=sum(n)))[[1]]
+# Common words
+comn <- head(cntn, 20)
+# Half of text words
+wcnt <- 0
+halfn <- 1
+ninetyn <- 1
+for (i in 1:nrow(cntn)) {
+    wcnt <- wcnt + as.integer(cntn[i,2])
+    if (wcnt <= totalwordsn/2)
+        halfn <- halfn + 1
+    if (wcnt <= totalwordsn * 0.9)
+        ninetyn <- ninetyn + 1
+}
+# Word frequency distribution
+ggn <- ggplot(cntn, aes(n/totalwordsn*100)) +
+    geom_histogram(binwidth=0.001, fill="pink", show.legend = FALSE) +
+    xlim(NA, 0.1) +
+    scale_y_log10() +
+    labs(title="News", x="Occurrence %")
+rm(cntn)
+
+### 2-grams
+load(file=tidynewsfn)   # restore
+# Split the tokens into pairs
+cnt2n <- tidyn %>% unnest_tokens(bigram, x, token="ngrams", n=2) %>% count(bigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyn)
+save(cnt2n, file="data/bigrams_news.rda")   # store for later quick loading
+uniqwords2n <- nrow(cnt2n)
+# Sum the values in the n column for total bigram occurrences
+totalwords2n <- (cnt2n %>% summarize(total=sum(n)))[[1]]
+# Common bigrams
+com2n <- head(cnt2n, 20)
+rm(cnt2n)
+
+### 3-grams
+load(file=tidynewsfn)   # restore
+# Split the tokens into triples
+cnt3n <- tidyn %>% unnest_tokens(trigram, x, token="ngrams", n=3) %>% count(trigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyn)
+save(cnt3n, file="data/trigrams_news.rda")   # store for later quick loading
+uniqwords3n <- nrow(cnt3n)
+# Sum the values in the n column for total trigram occurrences
+totalwords3n <- (cnt3n %>% summarize(total=sum(n)))[[1]]
+# Common trigrams
+com3n <- head(cnt3n, 20)
+rm(cnt3n)
+```
+
+
+```{r twit, echo=FALSE, message = FALSE}
+### TWITTER DATA ###
+
+cntt <- rawToTidyCnts("twitter", twitfn, twitsz, tidytwitfn)
+
+### Frequency
+save(cntt, file="data/unigrams_twitter.rda")
+# Size of cntX is total unique words
+uniqwordst <- nrow(cntt)
+# Sum the values in the n column for total word occurrences
+totalwordst <- (cntt %>% summarize(total=sum(n)))[[1]]
+# Common words
+comt <- head(cntt, 20)
+# Half of text words
+wcnt <- 0
+halft <- 1
+ninetyt <- 1
+for (i in 1:nrow(cntt)) {
+    wcnt <- wcnt + as.integer(cntt[i,2])
+    if (wcnt <= totalwordst/2)
+        halft <- halft + 1
+    if (wcnt <= totalwordst * 0.9)
+        ninetyt <- ninetyt + 1
+}
+# Word frequency distribution
+ggt <- ggplot(cntt, aes(n/totalwordst*100)) +
+    geom_histogram(binwidth=0.001, fill="yellow", show.legend = FALSE) +
+    xlim(NA, 0.1) +
+    scale_y_log10() +
+    labs(title="Twitter", x="Occurrence %")
+rm(cntt)
+
+### 2-grams
+load(file=tidytwitfn)   # restore
+# Split the tokens into pairs
+cnt2t <- tidyt %>% unnest_tokens(bigram, x, token="ngrams", n=2) %>% count(bigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyt)
+save(cnt2t, file="data/bigrams_twitter.rda")   # store for later quick loading
+uniqwords2t <- nrow(cnt2t)
+# Sum the values in the n column for total bigram occurrences
+totalwords2t <- (cnt2t %>% summarize(total=sum(n)))[[1]]
+# Common bigrams
+com2t <- head(cnt2t, 20)
+rm(cnt2t)
+
+### 3-grams
+load(file=tidytwitfn)   # restore
+# Split the tokens into triples
+cnt3t <- tidyt %>% unnest_tokens(trigram, x, token="ngrams", n=3) %>% count(trigram, sort=TRUE) %>% ungroup()
+# Note: Need to have already removed profanity, split on sentences!
+rm(tidyt)
+save(cnt3t, file="data/trigrams_twitter.rda")   # store for later quick loading
+uniqwords3t <- nrow(cnt3t)
+# Sum the values in the n column for total trigram occurrences
+totalwords3t <- (cnt3t %>% summarize(total=sum(n)))[[1]]
+# Common trigrams
+com3t <- head(cnt3t, 20)
+rm(cnt3t)
+
+TODO: Add phrase section!
+```
+
+
+## Exploratory Data Analysis
+
+First, let's look at basic summaries of the three files.
+
+```{r xplor1, echo=FALSE}
+linecnt <- c(lenb, lenn, lent)
+uniqwords <- c(uniqwordsb, uniqwordsn, uniqwordst)
+totalwords <- c(totalwordsb, totalwordsn, totalwordst)
+uniqwords2 <- c(uniqwords2b, uniqwords2n, uniqwords2t)
+totalwords2 <- c(totalwords2b, totalwords2n, totalwords2t)
+uniqwords3 <- c(uniqwords3b, uniqwords3n, uniqwords3t)
+totalwords3 <- c(totalwords3b, totalwords3n, totalwords3t)
+summ <- data.frame(linecnt, totalwords, uniqwords, totalwords2, uniqwords2, totalwords3, uniqwords3, row.names=spacedHeaders(10, FALSE))
+colnames(summ) <- c("Lines", "Total Words", "Unique Words", "Total 2-grams", "Unique 2-grams", "Total 3-grams", "Unique 3-grams")
+t(summ)
+```
+
+### Most Common Words
+
+Here are the lists of the most common words in each data source, along with counts of how often they occur throughout each file. As expected, **"the"** is the most common word in each, although we can see that Twitter users often skip this word due to the length constraints of that app.
+
+```{r common, echo=FALSE}
+common <- cbind(comb, comn, comt)
+colnames(common) <- spacedHeaders(10, TRUE)
+common
+```
+
+From the total word counts shown previously, we can calculate how many unique words make up 50% of the text by summing the occurrence counts of the most common words until we reach half of the total count.
+
+```{r half, echo=FALSE}
+# Question #3: How many unique words do you need in a frequency sorted dictionary to cover 50% of all word instances in the language? 90%?
+halftext <- rbind(halfb, halfn, halft)
+colnames(halftext) <- c("Word Count: 50% of Text")
+rownames(halftext) <- spacedHeaders(4, FALSE)
+halftext
+
+ninetytext <- rbind(ninetyb, ninetyn, ninetyt)
+colnames(ninetytext) <- c("Word Count: 90% of Text")
+rownames(ninetytext) <- spacedHeaders(4, FALSE)
+ninetytext
+
+TODO: spacedHeaders for 90% ??
+```
+
+We can also see the most common bi-grams.
+
+```{r common2, echo=FALSE}
+common2 <- cbind(com2b, com2n, com2t)
+colnames(common2) <- spacedHeaders(15, TRUE)
+common2
+```
+
+And the most common tri-grams.
+
+```{r common3, echo=FALSE}
+common3 <- cbind(com3b, com3n, com3t)
+colnames(common3) <- spacedHeaders(20, TRUE)
+common3
+```
+
+
+### Frequency Graphs
+
+Let's look at the distribution of the most frequent terms, scaled to the percentage of the total text that they represent.
+(Note that the graphs are logarithmic on the Y axis.)
+
+```{r graph, echo=FALSE, warning=FALSE}
+# Question #1: Some words are more frequent than others - what are the distributions of word frequencies?
+ggb
+ggn
+ggt
+# Question #2: What are the frequencies of 2-grams and 3-grams in the dataset?
+# TODO
+# Question #4: How do you evaluate how many of the words come from foreign languages?
+# TODO
+```
+
+The graphs all show (as expected) that the majority of words occur rarely (the tall left side of the graphs), with only a very low number of words occurring even 0.1% of the time (larger X values have been truncated for graph readability).
+
+### Problems and Next Steps
+
+For the purposes of this project, there are basically an infinite number of words in the language, so we cannot hope to represent them all in a model. Consequently, we will take a two-pronged approach to make the problem more tractable:
+
+1. Use techniques like word stemming/lemmatization to have most entries in our lists cover more than one form of each word.
+2. Treat all words that are uncommon as essentially identical from a math point-of-view.
+
+## Modeling
+
+We will build an n-gram model for predicting the next word based on the previous N words. This plan immediately poses two questions:
+
+1. What is N?
+2. What happens when we do not have N previous words?
+
+This solution involves multiple models, each brought to bear at an appropriate time.
+
+### Zero-gram "model"
+
+First, before any terms have been typed, there is a base frequency of the most common terms that start a message. This could be thought of as a 0-gram model, although it is not really a model; it's simply a measurement of the most common terms. The top 3 of these can be suggested immediately at the start of a typing session. Since this is a small, static list of terms, determined in advance, it could be maintained on the client side (i.e. on the user's phone) and updated as we learn what terms this individual usually starts messages with.
+
+This could also be 24 lists of 3 terms, one for each letter, triggered by whichever letter the user types first.
+
+### The Main Algorithm: 1/2/3-gram models
+
+As words are typed, we can use our knowledge of the patterns in the training data to predict which words are most likely to be next. We will suggest 3 words for the user to choose from at each stage:
+
+* If there are 3 (or more) terms already typed, use our 3-gram model to predict the following term.
+* If there are only 2 terms already typed, or if the 3-gram does not exist in our model above, use our 2-gram model to predict the following term.
+* If there is only 1 term already typed, or if any longer (2 or 3) phrases do not exist in our models above, use our unigram model to predict the following term.
+
+### Unknown terms
+
+The existence of terms that are not covered by our model will force adjustments to the main algorithm above.
+
+* In the same way that we formed the "zero-gram" model above, we will have a predetermined list of the most common second terms, regardless of what the first term is. This list will be suggested whenever the previous term was an unknown.
+* If an unknown term is either 2 or 3 terms ago (i.e. "\<unknown> \<known>" or "\<unknown> \<known> \<known>"), we will use the N-1 model for prediction. That is, when the unknown term is 2 terms ago, use the unigram model; when the unknown term is 3 terms ago, use the 2-gram model, based on just the last two known terms. The plan simply follows the main algorithm with the unknown term representing a "restart" of the text.
+
+### Saving space
+
+To conserve memory, all terms/bigrams/trigrams with low frequency will be assumed to have the same (small) occurrence count, so we will not have to store statistics for them. There will be a minimum probability of occurrence (calculated ahead of time) that can be assumed for any arbitrary term that is not directly represented in a model.
+
+Question #5: Can you think of a way to increase the coverage -- identifying words that may not be in the corpora or using a smaller number of words in the dictionary to cover the same number of phrases?
+
+### Evaluation
+
+In order to measure the validity of the models, the given source data will be split into training vs. testing groups. The models will be built on the training data, and then we will run the models on the testing data (one sentence at a time) to measure how often we can predict the next word in the sentence.
+

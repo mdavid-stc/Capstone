@@ -19,16 +19,17 @@ shinyUI(fluidPage(
   # Sidebar with a slider input for choosing the discontinuity year
   sidebarLayout(
     sidebarPanel(
-        helpText("Please enter some text, and the result will be the prediction of the probable following word"),
+        helpText("Please enter some text, and the result will be predictions of the probable following word"),
         textInput("inText",  "Text input:", value=""),
         p(" "),
         helpText("Note that if you are the first person to use this app in a while, you may have to wait 20 seconds for the first suggestions to show. But it should be quick after that."),
-        p("Documentation:"), a("https://github.com/mdavid-stc/Capstone")
+        p("Documentation:"), a("https://github.com/mdavid-stc/Capstone"),
+        p("Presentation:"), a("http://rpubs.com/MarkDavid/395750")
     ),
 
     # Show a plot of the generated distribution
     mainPanel(
-        h4("Predicted next words:"),
+        h4("Predicted next words (in probability order):"),
         h3(textOutput("predictions"))
     )
   )
